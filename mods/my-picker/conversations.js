@@ -2,7 +2,7 @@
 // this machine. Herdr's calls come in as `io` ({ exec, hc, readTextFile, home }),
 // so tests can run this on sample files in a temporary folder.
 
-import { hasAll } from "./search.js";
+import { hasAll, listRows } from "./search.js";
 
 /** How much of each transcript's end is searched (exec output stops at 8 MiB). */
 export const TAIL_BYTES = 4 << 20;
@@ -15,6 +15,14 @@ export const SNIPPET_CHARS = 70;
 export function agentKind(a) {
   const k = `${a.program?.key ?? ""} ${a.app ?? ""}`.toLowerCase();
   return k.includes("claude") ? "claude" : k.includes("codex") ? "codex" : null;
+}
+
+/** The Claude and Codex terminals on this machine in tabs that match `query` on no field. */
+export function searchTargets(data, query) {
+  const matched = new Set(listRows(data, query).filter((r) => r.kind === "ctx").map((r) => r.ctx.id));
+  const remote = new Set(data.spaces.filter((w) => w.machine).map((w) => w.id));
+  const kept = data.agents.filter((a) => agentKind(a) && !matched.has(a.tab) && !remote.has(a.space));
+  return kept.map((a) => ({ tab: a.tab, address: a.address, kind: agentKind(a), cwd: data.panes.find((p) => p.pane === a.pane)?.cwd ?? null }));
 }
 
 /** Claude Code's folder under ~/.claude/projects for a working folder. */

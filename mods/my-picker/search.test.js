@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { words, hasAll, tabLabel, listRows, picks, firstPick } from "./search.js";
+import { searchTargets } from "./conversations.js";
 
 const tab = (id, name, named = true) => ({ id, name, named, status: null });
 const data = {
@@ -9,9 +10,9 @@ const data = {
     { id: "s2", name: "research", status: null, tabs: [tab("t3", "notes"), tab("t4", "4", false)] },
   ],
   agents: [
-    { address: "a1", pane: "p1", tab: "t1", title: "✳ Fix the picker", program: { name: "Claude Code" } },
-    { address: "a2", pane: "p2", tab: "t2", title: "⠂ Slack thread on MCP eval ground truth", program: { name: "Claude Code" } },
-    { address: "a3", pane: "p3", tab: "t3", title: "codex", program: { name: "Codex" } },
+    { address: "a1", pane: "p1", space: "s1", tab: "t1", title: "✳ Fix the picker", program: { key: "claude", name: "Claude Code" } },
+    { address: "a2", pane: "p2", space: "s1", tab: "t2", title: "⠂ Slack thread on MCP eval ground truth", program: { key: "claude", name: "Claude Code" } },
+    { address: "a3", pane: "p3", space: "s2", tab: "t3", title: "codex", program: { key: "codex", name: "Codex" } },
   ],
   panes: [
     { pane: "p1", tab: "t1", cwd: "/code/glock", branch: "main", title: "Fix the picker", focused: true },
@@ -63,6 +64,15 @@ test("R3: conversation-only matches come last with their snippet", () => {
   assert.deepEqual(tabIds(late), ["t1", "t3"]);
   assert.ok(late.filter((r) => r.kind === "ctx").every((r) => r.snippet));
   assert.ok(!late.some((r) => r.kind === "none"));
+});
+
+test("R3: back to an earlier query, tabs found by conversation are searched again", () => {
+  // "zebra" found t1 and t3 by conversation; after typing "zebrax" and deleting the "x" those hits show again,
+  assert.deepEqual(tabIds(listRows(data, "zebra", new Map([["t1", "…zebra…"], ["t3", "…zebra…"]]))), ["t1", "t3"]);
+  // and the next search still covers them. Only field matches (t2 by its title) and remote spaces are left out.
+  assert.deepEqual(searchTargets(data, "zebra").map((t) => [t.tab, t.kind, t.cwd]), [["t1", "claude", "/code/glock"], ["t2", "claude", "/code/browser-notes"], ["t3", "codex", "/code/research"]]);
+  assert.deepEqual(searchTargets(data, "thread").map((t) => t.tab), ["t1", "t3"]);
+  assert.deepEqual(searchTargets({ ...data, spaces: data.spaces.map((w) => ({ ...w, machine: w.id === "s2" ? "m" : null })) }, "zebra").map((t) => t.tab), ["t1", "t2"]);
 });
 
 test("R4: no matches shows No matches and selects nothing", () => {

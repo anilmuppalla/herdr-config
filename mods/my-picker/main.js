@@ -9,7 +9,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { agents, spaces, panes, terminals, run, exec, hc, readTextFile, home, theme, settings, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
 import { words, listRows, picks, firstPick } from "./search.js";
-import { agentKind, searchConversations } from "./conversations.js";
+import { searchTargets, searchConversations } from "./conversations.js";
 
 const IO = { exec, hc, readTextFile, home };
 /** How long typing must pause before conversations are searched. */
@@ -74,29 +74,24 @@ export default class Picker extends View {
     closeOverlay(props().overlay);
   }
 
-  rows() {
-    const live = terminals().filter((x) => x.state === "live");
-    const conv = this.conv?.query === this.filter ? this.conv.hits : undefined;
-    return listRows({ spaces: spaces(), agents: agents(), panes: panes(), live, machines: this.machines }, this.filter, conv);
+  data() {
+    return { spaces: spaces(), agents: agents(), panes: panes(), live: terminals().filter((x) => x.state === "live"), machines: this.machines };
   }
 
-  // Once typing pauses, searches the conversations of this machine's Claude Code
-  // and Codex terminals in tabs that don't match otherwise. Typing never waits
-  // on it, and a result for an older query is dropped.
+  rows() {
+    return listRows(this.data(), this.filter, this.conv?.query === this.filter ? this.conv.hits : undefined);
+  }
+
+  // Once typing pauses, searches conversations (see searchTargets for which ones).
+  // Typing never waits on it, and a result for an older query is dropped.
   searchSoon(cx) {
     this.pending?.cancel();
-    const query = this.filter;
-    const seq = ++this.seq;
+    const query = this.filter, seq = ++this.seq;
     const ws = words(query);
     if (!ws.length) return;
     this.pending = cx.timer.after(PAUSE_MS, (cx) =>
       cx.spawn(async (cx) => {
-        const matched = new Set(this.rows().filter((r) => r.kind === "ctx").map((r) => r.ctx.id));
-        const remote = new Set(spaces().filter((w) => w.machine).map((w) => w.id));
-        const targets = agents()
-          .filter((a) => agentKind(a) && !matched.has(a.tab) && !remote.has(a.space))
-          .map((a) => ({ tab: a.tab, address: a.address, kind: agentKind(a), cwd: panes().find((p) => p.pane === a.pane)?.cwd ?? null }));
-        const hits = await searchConversations(IO, targets, ws, this.cache);
+        const hits = await searchConversations(IO, searchTargets(this.data(), query), ws, this.cache);
         if (seq !== this.seq) return;
         const key = (r) => r && (r.ctx?.id ?? `${r.kind} ${r.machine ?? ""}`);
         const was = key(picks(this.rows())[this.at]);
