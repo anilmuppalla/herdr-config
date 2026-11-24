@@ -1,12 +1,19 @@
 // Go to a tab. Drops from the Terminals layout's space chip (popup, at: "top"). Spaces with
 // something that needs you come first, then idle spaces (no agent running)
-// under an Idle heading. Type to filter, ↑/↓ and Enter to go, ctrl+d to close
+// under an Idle heading. Type to filter (every word, see search.js; a pause also
+// searches open agents' conversations), ↑/↓ and Enter to go, ctrl+d to close
 // a tab, Esc to leave. Last rows: a new tab, a new worktree or space, browse worktrees, and a
 // space on each connected machine.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, spaces, terminals, run, hc, theme, settings, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
+import { agents, spaces, panes, terminals, run, exec, hc, readTextFile, home, theme, settings, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
+import { words, listRows, picks, firstPick } from "./search.js";
+import { agentKind, searchConversations } from "./conversations.js";
+
+const IO = { exec, hc, readTextFile, home };
+/** How long typing must pause before conversations are searched. */
+const PAUSE_MS = 250;
 
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
@@ -40,15 +47,19 @@ export default class Picker extends View {
     this.input = InputState.new({ placeholder: "Go to a tab, space or agent…" });
     this.input.on("change", (_e, cx) => {
       this.filter = this.input.value();
-      this.at = this.filter ? Math.max(0, this.rows().filter(r => r.kind !== "head").findIndex(r => r.kind === "ctx")) : 0;
+      this.at = firstPick(picks(this.rows()), this.filter);
+      this.searchSoon(cx);
       cx.notify();
     });
-    this.input.on("submit", (_e, cx) => this.go(this.rows().filter(r => r.kind !== "head")[this.at], cx));
+    this.input.on("submit", (_e, cx) => this.go(picks(this.rows())[this.at], cx));
     this.input.focus();
     cx.timer.after(600, () => this.input.focus());
     this.at = null;
     this.scroll = 0;
     this.machines = [];
+    this.seq = 0;
+    this.conv = null;
+    this.cache = {};
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       try {
@@ -64,43 +75,37 @@ export default class Picker extends View {
   }
 
   rows() {
-    const f = this.filter.toLowerCase();
-    const all = agents();
     const live = terminals().filter((x) => x.state === "live");
-    const teamOf = (addrs) => {
-      let n = 0;
-      const walk = (a) => live.filter((x) => x.parent === a).forEach((k) => (n++, walk(k.address)));
-      addrs.forEach(walk);
-      return n;
-    };
-    const groups = spaces().map((w) => {
-      const ctxs = w.tabs
-        .map((ctx) => {
-          const mine = all.filter((a) => a.tab === ctx.id);
-          return { w, ctx, mine, team: teamOf(mine.map((a) => a.address)) };
-        })
-        .filter((c) => !f || [w.name, c.ctx.name, ...c.mine.map((a) => a.program?.name ?? "")].join(" ").toLowerCase().includes(f));
-      return { w, ctxs };
-    });
-    const busy = groups.filter((p) => p.w.status && p.ctxs.length);
-    const quiet = groups.filter((p) => !p.w.status && p.ctxs.length);
-    busy.sort((a, b) => (b.w.status === "blocked") - (a.w.status === "blocked"));
-    const out = [];
-    const add = (p) => {
-      out.push({ kind: "head", w: p.w });
-      for (const c of p.ctxs) out.push({ kind: "ctx", ...c });
-    };
-    busy.forEach(add);
-    // Spaces with no agent running, always listed under their own heading.
-    if (quiet.length) {
-      out.push({ kind: "idle" });
-      quiet.forEach(add);
-    }
-    out.push({ kind: "new" });
-    out.push({ kind: "worktree" });
-    out.push({ kind: "browse" });
-    for (const m of this.machines) out.push({ kind: "space", machine: m });
-    return out;
+    const conv = this.conv?.query === this.filter ? this.conv.hits : undefined;
+    return listRows({ spaces: spaces(), agents: agents(), panes: panes(), live, machines: this.machines }, this.filter, conv);
+  }
+
+  // Once typing pauses, searches the conversations of this machine's Claude Code
+  // and Codex terminals in tabs that don't match otherwise. Typing never waits
+  // on it, and a result for an older query is dropped.
+  searchSoon(cx) {
+    this.pending?.cancel();
+    const query = this.filter;
+    const seq = ++this.seq;
+    const ws = words(query);
+    if (!ws.length) return;
+    this.pending = cx.timer.after(PAUSE_MS, (cx) =>
+      cx.spawn(async (cx) => {
+        const matched = new Set(this.rows().filter((r) => r.kind === "ctx").map((r) => r.ctx.id));
+        const remote = new Set(spaces().filter((w) => w.machine).map((w) => w.id));
+        const targets = agents()
+          .filter((a) => agentKind(a) && !matched.has(a.tab) && !remote.has(a.space))
+          .map((a) => ({ tab: a.tab, address: a.address, kind: agentKind(a), cwd: panes().find((p) => p.pane === a.pane)?.cwd ?? null }));
+        const hits = await searchConversations(IO, targets, ws, this.cache);
+        if (seq !== this.seq) return;
+        const key = (r) => r && (r.ctx?.id ?? `${r.kind} ${r.machine ?? ""}`);
+        const was = key(picks(this.rows())[this.at]);
+        this.conv = { query, hits };
+        const now = picks(this.rows());
+        this.at = this.at < 0 ? firstPick(now, query) : now.findIndex((r) => key(r) === was);
+        cx.notify();
+      }),
+    );
   }
 
   go(r) {
@@ -121,7 +126,7 @@ export default class Picker extends View {
   render() {
     const t = theme();
     const rows = this.rows();
-    const pickable = rows.filter((r) => r.kind !== "head" && r.kind !== "idle");
+    const pickable = picks(rows);
     // Opens on where you are.
     if (this.at === null) this.at = Math.max(0, pickable.findIndex((r) => r.kind === "ctx" && r.w.active && r.ctx.active));
     this.at = Math.min(this.at, pickable.length - 1);
@@ -130,9 +135,10 @@ export default class Picker extends View {
     // y. Scrolling moves the strip only as far as it takes to keep the selected
     // row in view, so the arrows can't run the selection off the list.
     const H = { head: 29, idle: 33, new: 36, ctx: 32, space: 32 };
+    const hOf = (r) => (r.snippet !== undefined ? 50 : H[r.kind] ?? 32);
     const tops = [];
     let y = 0;
-    rows.forEach((r) => { tops.push(y); y += H[r.kind] ?? 32; });
+    rows.forEach((r) => { tops.push(y); y += hOf(r); });
     const total = y;
     const height = Math.min(560, this.listHeight ?? 560);
     const fixed = total > height;
@@ -141,13 +147,13 @@ export default class Picker extends View {
     const si = rows.indexOf(sel);
     if (si >= 0) {
       if (tops[si] < this.scroll) this.scroll = tops[si];
-      if (tops[si] + (H[sel.kind] ?? 32) > this.scroll + height) this.scroll = tops[si] + (H[sel.kind] ?? 32) - height;
+      if (tops[si] + hOf(sel) > this.scroll + height) this.scroll = tops[si] + hOf(sel) - height;
     }
     const place = (el, i) =>
       fixed
-        ? el.absolute().left(0).right(0).top(tops[i] - this.scroll).bottom(height - (tops[i] + (H[rows[i].kind] ?? 32) - this.scroll))
+        ? el.absolute().left(0).right(0).top(tops[i] - this.scroll).bottom(height - (tops[i] + hOf(rows[i]) - this.scroll))
         : el;
-    const visible = (i) => !fixed || (tops[i] + (H[rows[i].kind] ?? 32) > this.scroll && tops[i] < this.scroll + height);
+    const visible = (i) => !fixed || (tops[i] + hOf(rows[i]) > this.scroll && tops[i] < this.scroll + height);
 
     const row = (r) => {
       if (r.kind === "head") {
@@ -177,6 +183,7 @@ export default class Picker extends View {
           .text_color(t.dim)
           .child("Idle");
       }
+      if (r.kind === "none") return div().id("pk-none").px(14).h(32).flex().items_center().text_color(t.dim).child("No matches");
       const on = r === sel;
       if (r.kind === "new" || r.kind === "worktree" || r.kind === "browse" || r.kind === "space") {
         const label = { new: "New tab", worktree: "New worktree or space…", browse: "Browse worktrees…" }[r.kind] ?? `New space on ${r.machine}`;
@@ -200,23 +207,30 @@ export default class Picker extends View {
       }
       const who = r.mine.map((a) => a.program?.name ?? "agent").join(" · ");
       const here = r.w.active && r.ctx.active;
-      return h_flex()
+      const conv = r.snippet !== undefined;
+      const line = h_flex()
+        .w_full()
+        .gap(10)
+        .items_center()
+        .child(this.glyph(t, r.ctx.status))
+        .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).when(here, (d) => d.font_semibold()).child(r.label))
+        .when(r.ctx.status === "blocked", (el) => el.child(div().text_size(11).text_color(t.blocked).child("needs you")))
+        .when(r.ctx.status === "done", (el) => el.child(div().text_size(11).text_color(t.done).child("finished")))
+        .when(conv, (el) => el.child(div().flex_none().text_size(11).text_color(t.accent).child("in conversation")))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child(who + (r.team ? `  +${r.team}` : "")));
+      return v_flex()
         .id(`pk-${r.ctx.id}`)
         .mx(4)
         .px(10)
-.h(32)
+        .h(hOf(r))
         .rounded(7)
-        .gap(10)
-        .items_center()
+        .justify_center()
         .cursor_pointer()
         .when(on, (el) => el.bg(t.hover))
         .hover((s) => s.bg(t.hover))
         .on_click(() => this.go(r))
-        .child(this.glyph(t, r.ctx.status))
-        .child(div().flex_1().truncate().text_color(t.foreground).when(here, (d) => d.font_semibold()).child(r.ctx.name))
-        .when(r.ctx.status === "blocked", (el) => el.child(div().text_size(11).text_color(t.blocked).child("needs you")))
-        .when(r.ctx.status === "done", (el) => el.child(div().text_size(11).text_color(t.done).child("finished")))
-        .child(div().text_size(11).text_color(t.dim).child(who + (r.team ? `  +${r.team}` : "")));
+        .child(line)
+        .when(conv, (el) => el.child(div().pl(22).truncate().text_size(11).text_color(t.dim).child(r.snippet)));
     };
 
     return v_flex()
@@ -232,7 +246,7 @@ export default class Picker extends View {
         const k = e.key;
         if (k === "escape") return this.close();
         if (k === "down") this.at = (this.at + 1) % pickable.length;
-        else if (k === "up") this.at = (this.at + pickable.length - 1) % pickable.length;
+        else if (k === "up") this.at = ((this.at < 0 ? pickable.length : this.at) + pickable.length - 1) % pickable.length;
         else if (k === "d" && e.modifiers.control) {
           if (sel?.kind === "ctx") {
             this.close();
