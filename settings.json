@@ -1,0 +1,12 @@
+{
+  "zoom": 1.1,
+  "sounds": {
+    "enabled": true
+  },
+  "font": "SF Mono",
+  "font_size": 14.0,
+  "font_ligatures": false,
+  "ui_font": "SF Mono",
+  "minimum_contrast": 1.0,
+  "appearance": "light"
+}

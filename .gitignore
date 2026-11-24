@@ -1,0 +1,23 @@
+# Track only what Anil made. Herdr rewrites or ships everything else.
+/*
+!/.gitignore
+!/README.md
+!/keys.json
+!/settings.json
+!/layouts/
+/layouts/*
+!/layouts/my-layout.json
+!/themes/
+/themes/win98.json
+!/mods/
+/mods/*
+!/mods/my-*/
+!/mods/claude-worktree/
+!/mods/spaces-pr/
+# Written by Herdr on every start, or local junk
+gpui-kit.d.ts
+jsconfig.json
+__pycache__/
+*.bak-*
+*.error
+.DS_Store
