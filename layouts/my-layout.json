@@ -186,6 +186,16 @@
     "width": 1,
     "color": "border"
   },
+  "floating": [
+    {
+      "id": "reopen",
+      "content": {
+        "mod": "my-reopen"
+      },
+      "edge": "right",
+      "align": "center"
+    }
+  ],
   "titlebar": "none",
   "traffic_lights": [
     12,

@@ -5,6 +5,7 @@
     "cmd-alt-h": "app.hide_others",
     "cmd-t": "tab.new",
     "cmd-w": "tab.close",
+    "cmd-shift-t": "my-reopen.reopen",
     "ctrl-tab": "tab.next",
     "ctrl-shift-tab": "tab.prev",
     "cmd-shift-]": "tab.next",
