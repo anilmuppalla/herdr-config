@@ -194,6 +194,14 @@
       },
       "edge": "right",
       "align": "center"
+    },
+    {
+      "id": "worktree-cleanup",
+      "content": {
+        "mod": "my-worktree-cleanup"
+      },
+      "edge": "right",
+      "align": "center"
     }
   ],
   "titlebar": "none",
